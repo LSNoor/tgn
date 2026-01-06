@@ -1,0 +1,27 @@
+[project]
+authors = [{name = "LSNoor", email = "lucnoor@gmail.com"}]
+dependencies = []
+name = "tgn"
+requires-python = ">= 3.11"
+version = "0.1.0"
+
+[build-system]
+build-backend = "hatchling.build"
+requires = ["hatchling"]
+
+[tool.pixi.workspace]
+channels = ["conda-forge"]
+platforms = ["win-64"]
+
+[tool.pixi.system-requirements]
+cuda = "12.6"
+
+[tool.pixi.pypi-dependencies]
+tgn = { path = ".", editable = true }
+
+[tool.pixi.tasks]
+
+[tool.pixi.dependencies]
+pytorch-gpu = ">=2.9.1,<3"
+pandas = ">=2.3.3,<3"
+scikit-learn = ">=1.8.0,<2"
