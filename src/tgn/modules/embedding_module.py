@@ -1,3 +1,5 @@
+from typing import Optional
+
 from tgn.model import TemporalAttentionLayer
 
 import torch
@@ -104,7 +106,7 @@ class TimeEmbedding(EmbeddingModule):
         class NormalLinear(nn.Linear):
             # From Jodie code
             def reset_parameters(self):
-                stdv = 1.0 / math.sqrt(self.in_features)
+                stdv = 1.0 / math.sqrt(self.weight.size(1))
 
                 init.normal_(self.weight, mean=0.0, std=stdv)
 
@@ -269,3 +271,243 @@ class GraphEmbedding(EmbeddingModule):
         mask,
     ):
         return NotImplemented
+
+
+class GraphSumEmbedding(GraphEmbedding):
+    def __init__(
+        self,
+        node_features,
+        edge_features,
+        memory,
+        neighbor_finder,
+        time_encoder,
+        n_layers,
+        n_node_features,
+        n_edge_features,
+        n_time_features,
+        embedding_dimension,
+        device,
+        n_heads=2,
+        dropout=0.1,
+        use_memory=True,
+    ):
+        super().__init__(
+            node_features=node_features,
+            edge_features=edge_features,
+            memory=memory,
+            neighbor_finder=neighbor_finder,
+            time_encoder=time_encoder,
+            n_layers=n_layers,
+            n_node_features=n_node_features,
+            n_edge_features=n_edge_features,
+            n_time_features=n_time_features,
+            embedding_dimension=embedding_dimension,
+            device=device,
+            n_heads=n_heads,
+            dropout=dropout,
+            use_memory=use_memory,
+        )
+        self.linear_1 = torch.nn.ModuleList(
+            [
+                torch.nn.Linear(
+                    embedding_dimension + n_time_features + n_edge_features,
+                    embedding_dimension,
+                )
+                for _ in range(n_layers)
+            ]
+        )
+        self.linear_2 = torch.nn.ModuleList(
+            [
+                torch.nn.Linear(
+                    embedding_dimension + n_node_features + n_time_features,
+                    embedding_dimension,
+                )
+                for _ in range(n_layers)
+            ]
+        )
+
+    def aggregate(
+        self,
+        n_layer,
+        source_node_features,
+        source_nodes_time_embedding,
+        neighbor_embeddings,
+        edge_time_embeddings,
+        edge_features,
+        mask,
+    ):
+        neighbors_features = torch.cat(
+            [neighbor_embeddings, edge_time_embeddings, edge_features], dim=2
+        )
+        neighbor_embeddings = self.linear_1[n_layer - 1](neighbors_features)
+        neighbors_sum = torch.nn.functional.relu(torch.sum(neighbor_embeddings, dim=1))
+
+        source_features = torch.cat(
+            [source_node_features, source_nodes_time_embedding.squeeze()], dim=1
+        )
+        source_embedding = torch.cat([neighbors_sum, source_features], dim=1)
+        source_embedding = self.linear_2[n_layer - 1](source_embedding)
+
+        return source_embedding
+
+
+class GraphAttentionEmbedding(GraphEmbedding):
+    def __init__(
+        self,
+        node_features,
+        edge_features,
+        memory,
+        neighbor_finder,
+        time_encoder,
+        n_layers,
+        n_node_features,
+        n_edge_features,
+        n_time_features,
+        embedding_dimension,
+        device,
+        n_heads=2,
+        dropout=0.1,
+        use_memory=True,
+    ):
+        super().__init__(
+            node_features,
+            edge_features,
+            memory,
+            neighbor_finder,
+            time_encoder,
+            n_layers,
+            n_node_features,
+            n_edge_features,
+            n_time_features,
+            embedding_dimension,
+            device,
+            n_heads,
+            dropout,
+            use_memory,
+        )
+
+        self.attention_models = torch.nn.ModuleList(
+            [
+                TemporalAttentionLayer(
+                    n_node_features=n_node_features,
+                    n_neighbors_features=n_node_features,
+                    n_edge_features=n_edge_features,
+                    time_dim=n_time_features,
+                    n_head=n_heads,
+                    dropout=dropout,
+                    output_dimension=n_node_features,
+                )
+                for _ in range(n_layers)
+            ]
+        )
+
+    def aggregate(
+        self,
+        n_layer,
+        source_node_features,
+        source_nodes_time_embedding,
+        neighbor_embeddings,
+        edge_time_embeddings,
+        edge_features,
+        mask,
+    ):
+        attention_model = self.attention_models[n_layer - 1]
+
+        source_embedding, _ = attention_model(
+            source_node_features,
+            source_nodes_time_embedding,
+            neighbor_embeddings,
+            edge_time_embeddings,
+            edge_features,
+            mask,
+        )
+
+        return source_embedding
+
+
+def get_embedding_module(
+    module_type,
+    node_features,
+    edge_features,
+    memory,
+    neighbor_finder,
+    time_encoder,
+    n_layers,
+    n_node_features,
+    n_edge_features,
+    n_time_features,
+    embedding_dimension,
+    device,
+    n_heads=2,
+    dropout=0.1,
+    n_neighbors: Optional[int] = None,
+    use_memory=True,
+):
+    if module_type == "graph_attention":
+        return GraphAttentionEmbedding(
+            node_features=node_features,
+            edge_features=edge_features,
+            memory=memory,
+            neighbor_finder=neighbor_finder,
+            time_encoder=time_encoder,
+            n_layers=n_layers,
+            n_node_features=n_node_features,
+            n_edge_features=n_edge_features,
+            n_time_features=n_time_features,
+            embedding_dimension=embedding_dimension,
+            device=device,
+            n_heads=n_heads,
+            dropout=dropout,
+            use_memory=use_memory,
+        )
+    elif module_type == "graph_sum":
+        return GraphSumEmbedding(
+            node_features=node_features,
+            edge_features=edge_features,
+            memory=memory,
+            neighbor_finder=neighbor_finder,
+            time_encoder=time_encoder,
+            n_layers=n_layers,
+            n_node_features=n_node_features,
+            n_edge_features=n_edge_features,
+            n_time_features=n_time_features,
+            embedding_dimension=embedding_dimension,
+            device=device,
+            n_heads=n_heads,
+            dropout=dropout,
+            use_memory=use_memory,
+        )
+
+    elif module_type == "identity":
+        return IdentityEmbedding(
+            node_features=node_features,
+            edge_features=edge_features,
+            memory=memory,
+            neighbor_finder=neighbor_finder,
+            time_encoder=time_encoder,
+            n_layers=n_layers,
+            n_node_features=n_node_features,
+            n_edge_features=n_edge_features,
+            n_time_features=n_time_features,
+            embedding_dimension=embedding_dimension,
+            device=device,
+            dropout=dropout,
+        )
+    elif module_type == "time":
+        return TimeEmbedding(
+            node_features=node_features,
+            edge_features=edge_features,
+            memory=memory,
+            neighbor_finder=neighbor_finder,
+            time_encoder=time_encoder,
+            n_layers=n_layers,
+            n_node_features=n_node_features,
+            n_edge_features=n_edge_features,
+            n_time_features=n_time_features,
+            embedding_dimension=embedding_dimension,
+            device=device,
+            dropout=dropout,
+            n_neighbors=n_neighbors,
+        )
+    else:
+        raise ValueError(f"Embedding Module {module_type} not supported")
